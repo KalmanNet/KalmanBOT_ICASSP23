@@ -78,36 +78,36 @@ def pnl_limit(positions, train_yx, beta, ret = 0):
 
 
 def position_Bollinger(e, Q):
-	longsEntry = e < -np.sqrt(Q)
-	longsExit = e >= 0
+    longsEntry = e < -np.sqrt(Q)
+    longsExit = e >= 0
 
-	shortsEntry = e > np.sqrt(Q)
-	shortsExit = e <= 0
+    shortsEntry = e > np.sqrt(Q)
+    shortsExit = e <= 0
 
-	numUnitsLong=np.zeros(longsEntry.shape)
-	numUnitsLong[:]=np.nan
+    numUnitsLong=np.zeros(longsEntry.shape)
+    numUnitsLong[:]=np.nan
 
-	numUnitsShort=np.zeros(shortsEntry.shape)
-	numUnitsShort[:]=np.nan
+    numUnitsShort=np.zeros(shortsEntry.shape)
+    numUnitsShort[:]=np.nan
 
-	numUnitsLong[0]=0
-	numUnitsLong[longsEntry]=1
-	numUnitsLong[longsExit]=0
-	numUnitsLong=pd.DataFrame(numUnitsLong)
-	numUnitsLong.fillna(method='ffill', inplace=True)
+    numUnitsLong[0]=0
+    numUnitsLong[longsEntry]=1
+    numUnitsLong[longsExit]=0
+    numUnitsLong=pd.DataFrame(numUnitsLong)
+    numUnitsLong.fillna(method='ffill', inplace=True)
 
-	numUnitsShort[0]=0
-	numUnitsShort[shortsEntry]=-1
-	numUnitsShort[shortsExit]=0
-	numUnitsShort=pd.DataFrame(numUnitsShort)
-	numUnitsShort.fillna(method='ffill', inplace=True)
+    numUnitsShort[0]=0
+    numUnitsShort[shortsEntry]=-1
+    numUnitsShort[shortsExit]=0
+    numUnitsShort=pd.DataFrame(numUnitsShort)
+    numUnitsShort.fillna(method='ffill', inplace=True)
 
-	numUnits=numUnitsLong+numUnitsShort
-	return numUnits
+    numUnits=numUnitsLong+numUnitsShort
+    return numUnits
 
 # def position_linear_no_thres(e,Q):
-# 	numUnits=e/Q
-# 	return numUnits
+#   numUnits=e/Q
+#   return numUnits
 
 # def position_linear_with_thres(e,Q):
 #     numUnits=e/Q
@@ -117,16 +117,16 @@ def position_Bollinger(e, Q):
 
 # def PnL_old(e, Q, df, beta):
 
-# 	numUnits = position_Bollinger(e, Q)
+#   numUnits = position_Bollinger(e, Q)
 
-# 	positions=pd.DataFrame(np.tile(numUnits.values, [1, 2]) * ts.add_constant(-beta[0,:].T)[:, [1,0]] *df.values) #  [hedgeRatio -ones(size(hedgeRatio))] is the shares allocation, [hedgeRatio -ones(size(hedgeRatio))].*y2 is the dollar capital allocation, while positions is the dollar capital in each ETF.
-# 	pnl=np.sum((positions.shift().values)*(df.pct_change().values), axis=1) # daily P&L of the strategy
+#   positions=pd.DataFrame(np.tile(numUnits.values, [1, 2]) * ts.add_constant(-beta[0,:].T)[:, [1,0]] *df.values) #  [hedgeRatio -ones(size(hedgeRatio))] is the shares allocation, [hedgeRatio -ones(size(hedgeRatio))].*y2 is the dollar capital allocation, while positions is the dollar capital in each ETF.
+#   pnl=np.sum((positions.shift().values)*(df.pct_change().values), axis=1) # daily P&L of the strategy
 
-# 	cum_pnl = pnl
-# 	cum_pnl[0] = 0
-# 	cum_pnl = np.cumsum(cum_pnl)
-# 	print('cum_pnl:', cum_pnl[-1])  # 67.2747825163527 for Chan
-# 	return pnl, cum_pnl
+#   cum_pnl = pnl
+#   cum_pnl[0] = 0
+#   cum_pnl = np.cumsum(cum_pnl)
+#   print('cum_pnl:', cum_pnl[-1])  # 67.2747825163527 for Chan
+#   return pnl, cum_pnl
 
 def PnL_new(e, Q, df, beta):
 
@@ -352,7 +352,40 @@ def KF_test_with_approx_bollinger(df, delta, r2, R_0, beta_0, rival = 0):
     x = torch.tensor(x, dtype=torch.float32)
     data = torch.hstack([y.T, x])
     data = data.T
-    return pnl_limit(positions, data.unsqueeze(dim=0), beta.unsqueeze(dim=0))
+    if rival==0:
+        return pnl_limit(positions, data.unsqueeze(dim=0), beta.unsqueeze(dim=0))
+        
+    positions = positions[0,:]
+    pnl = torch.zeros_like(positions)
+    tmp = torch.transpose(-beta[0:1,:], 1,0)
+
+    tmp = torch.hstack([-torch.ones(tmp.shape[0],1), torch.ones(tmp.shape[0],1)])
+
+    position = tmp * torch.tile(positions.unsqueeze(dim=0).T, [1, 2])
+    asset_price = torch.transpose(data, 1, 0)[:,:-1][:, [1,0]]
+    # print(position.shape)
+    # print(asset_price.shape)
+    asset_price_abs = torch.abs(torch.sum(asset_price*position, axis = 1))
+    # print(torch.where(asset_price_abs<0.001))
+    asset_price_abs[torch.where(asset_price_abs<0.001)[0]] = asset_price_abs[torch.where(asset_price_abs<0.001)[0]-1]
+    asset_price_abs[torch.where(asset_price_abs<0.001)[0]] = asset_price_abs[torch.where(asset_price_abs<0.001)[0]-1]
+
+    asset_price_diff = torch.diff(asset_price.T).T
+    pnl[1:] = torch.sum(asset_price_diff * position[:-1], axis = 1)
+    # print(pnl)
+    # print(asset_price_abs)
+    ret = pnl / asset_price_abs
+    ret[0] = 0
+
+    cum_ret = torch.cumprod(1+ret, dim=0)
+    # print(cum_ret)
+    print('cum_ret:', cum_ret[-1]-1)
+    # return pnl
+    cum_pnl = pnl
+    cum_pnl[0] = 0
+    cum_pnl = torch.cumsum(cum_pnl, dim=0)
+    print('cum_pnl:', cum_pnl[-1])
+    return cum_pnl, cum_ret-1
 
 def KF_test_with_learnable_bollinger(df, delta, r2, R_0, beta_0):
     x=df['chf']
